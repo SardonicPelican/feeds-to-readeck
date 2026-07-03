@@ -1,41 +1,49 @@
 {
   inputs = {
     flake-utils.url = "github:numtide/flake-utils";
-    naersk.url = "github:nix-community/naersk";
+    crane.url = "github:ipetkov/crane";
+    fenix.url = "github:nix-community/fenix";
     nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
 
-    naersk.inputs.nixpkgs.follows = "nixpkgs";
+    fenix.inputs.nixpkgs.follows = "nixpkgs";
   };
 
-  outputs = { self, flake-utils, naersk, nixpkgs }:
+  outputs = { self, flake-utils, crane, fenix, nixpkgs }:
     flake-utils.lib.eachDefaultSystem (system:
       let
         pkgs = import nixpkgs { inherit system; };
 
-        naersk' = pkgs.callPackage naersk { };
+        toolchain = fenix.packages.${system}.latest.toolchain;
 
-        buildPackage = devMode: naersk'.buildPackage {
-          src = ./.;
+        craneLib = (crane.mkLib pkgs).overrideToolchain toolchain;
+
+        commonArgs = {
+          src = craneLib.cleanCargoSource ./.;
 
           nativeBuildInputs = with pkgs; [ pkg-config ];
           buildInputs = with pkgs; [ openssl_3 ];
-
-          singleStep = devMode;
         };
+
+        cargoArtifacts = craneLib.buildDepsOnly commonArgs;
+
+        crate = craneLib.buildPackage (commonArgs // {
+          inherit cargoArtifacts;
+        });
       in
       {
         # For `nix build` & `nix run`:
-        packages.default = buildPackage false;
+        packages.default = crate;
 
         # For `nix develop`:
-        devShells.default = (buildPackage true).overrideAttrs (finalAttrs: previousAttrs: {
-          nativeBuildInputs = previousAttrs.nativeBuildInputs ++ (with pkgs; [
+        devShells.default = craneLib.devShell {
+          inputsFrom = [ crate ];
+
+          packages = with pkgs; [
             clippy
             gitFull
             rustfmt
-          ]);
-          RUST_SRC_PATH = "${pkgs.rustPlatform.rustLibSrc}";
-        });
+          ];
+        };
       }
     );
 }
