@@ -6,7 +6,7 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-mod pocket;
+mod readeck;
 
 use std::error::Error;
 use std::fmt::{self, Display};
@@ -23,7 +23,7 @@ use reqwest::{blocking::Client, StatusCode};
 use serde::{Deserialize, Serialize};
 use url::Url;
 
-use crate::pocket::Pocket;
+use crate::readeck::Readeck;
 
 fn main() {
     let args = Args::parse();
@@ -36,11 +36,6 @@ fn main() {
 fn run(args: &Args) -> Result<(), ErrorWithContext> {
     match &args.command {
         Some(Command::Init) => init(&args.config),
-        Some(Command::SetConsumerKey { key }) => args.with_config(|config| {
-            set_consumer_key(config, key);
-            Ok(())
-        }),
-        Some(Command::Login) => args.with_config(login),
         Some(Command::Add(cmd)) => args.with_config(|config| add(config, cmd)),
         Some(Command::Remove { feed_url }) => args.with_config(|config| remove(config, feed_url)),
         None => args.with_config(sync),
@@ -194,64 +189,12 @@ fn init(config_file_name: &Path) -> Result<(), ErrorWithContext> {
     Ok(())
 }
 
-fn set_consumer_key(config: &mut Configuration, key: &str) {
-    config.consumer_key = Some(key.to_string());
-}
-
-fn login(config: &mut Configuration) -> Result<(), ErrorWithContext> {
-    let client = Client::new();
-    let mut pocket = try_with_context!(
-        get_pocket(config, client),
-        "unable to perform authorization"
-    );
-
-    if config.access_token.is_some() {
-        println!(
-            "note: There's already an access token in the configuration file. \
-            Proceeding will overwrite this access token."
-        );
-    }
-
-    let auth_url = try_with_context!(
-        pocket.get_auth_url(),
-        "unable to get authorization URL for Pocket"
-    );
-    println!("Go to the following webpage to login: {}", auth_url);
-    println!("Then, press Enter to continue.");
-    loop {
-        // Let the user authorize access to the application before proceeding.
-        let mut _input = String::new();
-        try_with_context!(
-            std::io::stdin().read_line(&mut _input),
-            "unable to read from standard input"
-        );
-
-        match pocket.authorize() {
-            Ok(_) => {
-                config.access_token = Some(String::from(pocket.access_token().unwrap()));
-                return Ok(());
-            }
-            Err(e) => {
-                println!(
-                    "Authorization failed: {}\n\
-                    Make sure you authorized your application at the webpage linked above.\n\
-                    Press Enter to try again, or press Ctrl+C to exit.",
-                    e
-                );
-            }
-        }
-    }
-}
-
 fn sync(config: &mut Configuration) -> Result<(), ErrorWithContext> {
     let client = Client::new();
-    let mut pocket = try_with_context!(
-        get_authenticated_pocket(config, client.clone()),
-        "unable to sync"
-    );
+    let readeck = try_with_context!(get_readeck(client.clone()), "unable to sync");
 
     for feed in &mut config.feeds {
-        process_feed(feed, Some(&mut pocket), &client).unwrap_or_else(|e| {
+        process_feed(feed, Some(&readeck), &client).unwrap_or_else(|e| {
             let _ = writeln!(io::stderr(), "{}", e);
         });
     }
@@ -274,10 +217,10 @@ fn add(config: &mut Configuration, args: &AddCommand) -> Result<(), ErrorWithCon
         return Ok(());
     }
 
-    let send_to_pocket = args.unread;
-    let mut pocket = if send_to_pocket {
+    let send_to_readeck = args.unread;
+    let readeck = if send_to_readeck {
         Some(try_with_context!(
-            get_authenticated_pocket(config, client.clone()),
+            get_readeck(client.clone()),
             "unable to add feed"
         ))
     } else {
@@ -296,7 +239,7 @@ fn add(config: &mut Configuration, args: &AddCommand) -> Result<(), ErrorWithCon
 
     let feed = config.feeds.last_mut().unwrap();
 
-    process_feed(feed, pocket.as_mut(), &client)
+    process_feed(feed, readeck.as_ref(), &client)
 }
 
 fn remove(config: &mut Configuration, feed_url: &str) -> Result<(), ErrorWithContext> {
@@ -313,30 +256,21 @@ fn remove(config: &mut Configuration, feed_url: &str) -> Result<(), ErrorWithCon
     Ok(())
 }
 
-fn get_pocket(config: &Configuration, client: Client) -> Result<Pocket, PocketSetupError> {
-    match config.consumer_key {
-        Some(ref consumer_key) => Ok(Pocket::new(
-            consumer_key,
-            config.access_token.as_ref().map(|x| x.as_ref()),
-            client,
-        )),
-        None => Err(PocketSetupError::MissingConsumerKey),
-    }
-}
+fn get_readeck(client: Client) -> Result<Readeck, ReadeckSetupError> {
+    let base_url = std::env::var("READECK_URL")
+        .map_err(|_| ReadeckSetupError::MissingUrl)
+        .and_then(|url| {
+            Url::parse(&url).map_err(|e| ReadeckSetupError::InvalidUrl(url, e.to_string()))
+        })?;
+    let auth_token =
+        std::env::var("READECK_AUTH_TOKEN").map_err(|_| ReadeckSetupError::MissingAuthToken)?;
 
-fn get_authenticated_pocket(
-    config: &Configuration,
-    client: Client,
-) -> Result<Pocket, PocketSetupError> {
-    get_pocket(config, client).and_then(|pocket| match config.access_token {
-        Some(_) => Ok(pocket),
-        None => Err(PocketSetupError::MissingAccessToken),
-    })
+    Ok(Readeck::new(base_url, &auth_token, client))
 }
 
 fn process_feed(
     feed: &mut FeedConfiguration,
-    mut pocket: Option<&mut Pocket>,
+    readeck: Option<&Readeck>,
     client: &Client,
 ) -> Result<(), ErrorWithContext> {
     println!("downloading {}", feed.url);
@@ -393,24 +327,24 @@ fn process_feed(
 
             // Ignore entries we've processed previously.
             if !feed.processed_entries.iter().rev().any(|x| x == entry_url) {
-                let is_processed = if let Some(ref mut pocket) = pocket {
+                let is_processed = if let Some(readeck) = readeck {
                     match Url::parse(entry_url) {
                         Ok(parsed_entry_url) => {
-                            // Push the entry to Pocket.
+                            // Push the entry to Readeck.
                             // Only consider the entry processed if the push succeeded.
                             // That means that if it failed, we'll try again next time.
-                            println!("pushing {} to Pocket", entry_url);
+                            println!("pushing {} to Readeck", entry_url);
                             let tags = if feed.tags.is_empty() {
                                 None
                             } else {
                                 Some(&*feed.tags)
                             };
-                            let push_result = pocket.add(&parsed_entry_url, None, tags, None);
+                            let push_result = readeck.add(&parsed_entry_url, None, tags);
                             match push_result {
                                 Ok(_) => true,
                                 Err(error) => {
                                     println!(
-                                        "error while adding URL {url} to Pocket:\n  {error}",
+                                        "error while adding URL {url} to Readeck:\n  {error}",
                                         url = entry_url,
                                         error = Indented(&error)
                                     );
@@ -427,7 +361,7 @@ fn process_feed(
                         }
                     }
                 } else {
-                    // If `pocket` is None,
+                    // If `readeck` is None,
                     // then we just want to mark the current feed entries as processed,
                     // on the assumption that the user has read them already.
                     true
@@ -435,7 +369,7 @@ fn process_feed(
 
                 if is_processed {
                     // Remember that we've processed this entry
-                    // so we don't try to send it to Pocket next time.
+                    // so we don't try to send it to Readeck next time.
                     feed.processed_entries.push(entry_url.into());
                 } else {
                     all_processed_successfully = false;
@@ -444,7 +378,7 @@ fn process_feed(
         }
 
         // Don't update the last modified and last ETag
-        // if any push to Pocket failed
+        // if any push to Readeck failed
         // so we can try again next time.
         if all_processed_successfully {
             feed.last_modified = last_modified.and_then(|v| v.to_str().ok().map(|s| s.into()));
@@ -459,7 +393,7 @@ fn fetch(feed: &FeedConfiguration, client: &Client) -> Result<FeedResponse, Erro
     let mut request = client.get(&feed.url);
     request = request.header(
         header::USER_AGENT,
-        HeaderValue::from_static(concat!("feeds-to-pocket/", env!("CARGO_PKG_VERSION"))),
+        HeaderValue::from_static(concat!("feeds-to-readeck/", env!("CARGO_PKG_VERSION"))),
     );
 
     // Add an If-Modified-Since header if we have a Last-Modified date.
@@ -514,7 +448,7 @@ fn fetch(feed: &FeedConfiguration, client: &Client) -> Result<FeedResponse, Erro
 
 /// Simple program to greet a person
 #[derive(Parser, Debug)]
-#[clap(author, version, about, long_about = None, display_name = "Feeds to Pocket")]
+#[clap(author, version, about, long_about = None, display_name = "Feeds to Readeck")]
 struct Args {
     /// A YAML file containing your feeds configuration.
     //#[clap(short, long, value_parser)]
@@ -543,26 +477,6 @@ enum Command {
     /// Creates an empty configuration file (if it doesn't already exist).
     Init,
 
-    /// Sets the consumer key in the configuration file.
-    SetConsumerKey {
-        /// A consumer key obtained from Pocket's website.
-        /// You must create your own application
-        /// at https://getpocket.com/developer/apps/new
-        /// to obtain a consumer key;
-        /// I don't want you kicking me out of my own application! :)
-        /// Make sure your application has at least the "Add" permission.
-        key: String,
-    },
-
-    /// Obtains and saves an access token from Pocket.
-    /// This will print a URL on the standard output,
-    /// which you must open in a web browser
-    /// in order to grant your application access to your Pocket account.
-    /// Once authorization has been obtained,
-    /// an access token is saved in the configuration file,
-    /// which will be used to queue up entries in your Pocket list.
-    Login,
-
     /// Adds a feed to your feeds configuration
     /// or updates an existing feed in your feeds configuration.
     Add(AddCommand),
@@ -577,13 +491,13 @@ enum Command {
 #[derive(Parser, Debug)]
 struct AddCommand {
     /// Consider all the entries in the feed to be unread.
-    /// All entries will be sent to Pocket immediately.
+    /// All entries will be sent to Readeck immediately.
     /// By default, all the entries present when the feed is added
-    /// are considered read and are not sent to Pocket.
+    /// are considered read and are not sent to Readeck.
     #[clap(long)]
     unread: bool,
 
-    /// A comma-separated list of tags to attach to the URLs sent to Pocket.
+    /// A comma-separated list of tags to attach to the URLs sent to Readeck.
     #[clap(long)]
     tags: Option<String>,
 
@@ -593,10 +507,6 @@ struct AddCommand {
 
 #[derive(Default, Deserialize, Serialize)]
 struct Configuration {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    consumer_key: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    access_token: Option<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     #[serde(default)]
     feeds: Vec<FeedConfiguration>,
@@ -700,12 +610,15 @@ impl Error for ErrorWithContext {
 
 quick_error! {
     #[derive(Debug)]
-    enum PocketSetupError {
-        MissingConsumerKey {
-            display("The consumer key is not set in the configuration file. Run `feeds-to-pocket help set-consumer-key` for help and instructions.")
+    enum ReadeckSetupError {
+        MissingUrl {
+            display("The READECK_URL environment variable is not set.")
         }
-        MissingAccessToken {
-            display("The access token is not set in the configuration file. Run `feeds-to-pocket help login` for help and instructions.")
+        InvalidUrl(url: String, err: String) {
+            display("The READECK_URL environment variable ({}) is not a valid URL: {}", url, err)
+        }
+        MissingAuthToken {
+            display("The READECK_AUTH_TOKEN environment variable is not set.")
         }
     }
 }
