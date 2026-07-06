@@ -1,5 +1,7 @@
 # Feeds to Pocket
 
+[![CodSpeed](https://img.shields.io/endpoint?url=https://codspeed.io/badge.json)](https://app.codspeed.io/SardonicPelican/feeds-to-readeck?utm_source=badge)
+
 > **:warning: Pocket was [shut down][pocket-has-shut-down] on November 12, 2025.
 > Therefore, this application is no longer functional.**
 
