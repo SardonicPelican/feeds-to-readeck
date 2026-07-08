@@ -75,7 +75,7 @@ pub struct Readeck {
 /// Builds the `/api/bookmarks` endpoint URL from a Readeck instance's base URL,
 /// regardless of whether the base URL has a trailing slash
 /// or already includes a path.
-fn bookmarks_endpoint(base_url: &Url) -> Url {
+pub fn bookmarks_endpoint(base_url: &Url) -> Url {
     let mut url = base_url.clone();
     {
         let mut segments = url

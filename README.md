@@ -1,5 +1,7 @@
 # Feeds to Readeck
 
+[![CodSpeed](https://img.shields.io/endpoint?url=https://codspeed.io/badge.json)](https://app.codspeed.io/SardonicPelican/feeds-to-readeck?utm_source=badge)
+
 <b>Feeds to Readeck</b> watches your RSS and Atom feeds
 and pushes new items to your [Readeck][readeck] instance as bookmarks.
 
