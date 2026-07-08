@@ -6,15 +6,12 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-mod readeck;
-
 use std::error::Error;
 use std::fmt::{self, Display};
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process;
-use std::str::FromStr;
 
 use clap::Parser;
 use quick_error::quick_error;
@@ -23,7 +20,9 @@ use reqwest::{blocking::Client, StatusCode};
 use serde::{Deserialize, Serialize};
 use url::Url;
 
-use crate::readeck::Readeck;
+use feeds_to_readeck::feed::Feed;
+use feeds_to_readeck::readeck::Readeck;
+use feeds_to_readeck::Indented;
 
 fn main() {
     let args = Args::parse();
@@ -536,47 +535,6 @@ enum FeedResponse {
     NotModified,
 }
 
-enum Feed {
-    Atom(Box<atom_syndication::Feed>),
-    Rss(Box<rss::Channel>),
-}
-
-impl FromStr for Feed {
-    type Err = FeedError;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s.parse::<atom_syndication::Feed>() {
-            Ok(feed) => Ok(Feed::Atom(Box::new(feed))),
-            Err(atom_error) => match s.parse::<rss::Channel>() {
-                Ok(channel) => Ok(Feed::Rss(Box::new(channel))),
-                Err(rss_error) => Err(FeedError {
-                    atom_error,
-                    rss_error,
-                }),
-            },
-        }
-    }
-}
-
-#[derive(Debug)]
-struct FeedError {
-    atom_error: atom_syndication::Error,
-    rss_error: rss::Error,
-}
-
-impl Display for FeedError {
-    fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
-        write!(fmt, "could not parse input as either Atom or RSS:\n  parsing as Atom failed with:\n    {}\n  parsing as RSS failed with:\n    {}",
-            Indented(Indented(&self.atom_error)), Indented(Indented(&self.rss_error)))
-    }
-}
-
-impl Error for FeedError {
-    fn description(&self) -> &str {
-        "could not parse input as either Atom or RSS"
-    }
-}
-
 #[derive(Debug)]
 struct ErrorWithContext {
     error: Box<dyn Error>,
@@ -653,41 +611,5 @@ quick_error! {
 impl Errors {
     fn new(errors: Vec<Box<dyn Error>>) -> Errors {
         Errors::Errors(errors)
-    }
-}
-
-/// Wraps a type implementing Display
-/// and adds two spaces after each line feed in its display output.
-struct Indented<D: Display>(D);
-
-impl<D: Display> Display for Indented<D> {
-    fn fmt(&self, fmt: &mut fmt::Formatter) -> Result<(), fmt::Error> {
-        use std::fmt::Write;
-        write!(IndentedWrite(fmt), "{}", self.0)
-    }
-}
-
-/// Intercepts writes to a `std::fmt::Formatter`
-/// and adds two spaces after each line feed written to it.
-struct IndentedWrite<'a: 'f, 'f>(&'f mut fmt::Formatter<'a>);
-
-// The documentation recommends implementing std::io::Write,
-// but that trait operates on a stream of bytes,
-// whereas std::fmt::Write operates on string slices.
-// Additionally, we call Formatter::write_str(),
-// which returns a Result<(), std::fmt::Error>,
-// which matches the signature of std::fmt::Write::write_str().
-impl<'a: 'f, 'f> fmt::Write for IndentedWrite<'a, 'f> {
-    fn write_str(&mut self, s: &str) -> Result<(), fmt::Error> {
-        let mut lines = s.split('\n');
-        if let Some(line) = lines.next() {
-            self.0.write_str(line)?;
-            for line in lines {
-                self.0.write_str("\n  ")?;
-                self.0.write_str(line)?;
-            }
-        }
-
-        Ok(())
     }
 }
