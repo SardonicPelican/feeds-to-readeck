@@ -1,0 +1,8 @@
+[Unit]
+Description=Feeds to Readeck
+
+[Service]
+Type=oneshot
+Environment=READECK_URL=https://readeck.example.com/
+Environment=READECK_AUTH_TOKEN=changeme
+ExecStart=feeds-to-readeck %h/feeds-to-readeck.yaml

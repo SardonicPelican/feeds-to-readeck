@@ -1,5 +1,5 @@
 [Unit]
-Description=Timer for Feeds to Pocket
+Description=Timer for Feeds to Readeck
 
 [Timer]
 OnStartupSec=1m
